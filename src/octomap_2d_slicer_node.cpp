@@ -5,21 +5,21 @@
 
 namespace octomap_2d_slicer
 {
-
+//the __init__ equivalent in c++
 OctomapSlicerNode::OctomapSlicerNode(const rclcpp::NodeOptions & options)
 : Node("octomap_2d_slicer", options)
 {
   // ── Parameters ──────────────────────────────────────────────────────────────
   this->declare_parameter<std::string>("drone_frame",     "base_link");
   this->declare_parameter<std::string>("world_frame",     "map");
-  this->declare_parameter<double>     ("slice_thickness", 0.2);   // ±0.2 m around drone Z
+  this->declare_parameter<double>     ("slice_thickness", 0.2);
   this->declare_parameter<bool>       ("unknown_as_free", false);
-  this->declare_parameter<bool>       ("use_sim_time",true);
 
-  drone_frame_     = this->get_parameter("base_link").as_string();
-  world_frame_     = this->get_parameter("map").as_string();
+  drone_frame_     = this->get_parameter("drone_frame").as_string();   // fixed
+  world_frame_     = this->get_parameter("world_frame").as_string();   // fixed
   slice_thickness_ = this->get_parameter("slice_thickness").as_double();
   unknown_as_free_ = this->get_parameter("unknown_as_free").as_bool() ? 0.0 : -1.0;
+
 
   // ── TF2 ─────────────────────────────────────────────────────────────────────
   tf_buffer_   = std::make_shared<tf2_ros::Buffer>(this->get_clock());
