@@ -26,13 +26,16 @@ private:
   // Callbacks
   void octomapCallback(const octomap_msgs::msg::Octomap::SharedPtr msg);
 
+  nav_msgs::msg::OccupancyGrid persistent_grid_;
+  bool persistent_grid_initialized_ = false;
+  void remapPersistentGrid(const nav_msgs::msg::OccupancyGrid & new_frame);
   // Core logic
   bool getDroneZ(double & z_out);
   void buildSlice(
     const octomap::OcTree & tree,
     double drone_z,
     nav_msgs::msg::OccupancyGrid & grid);
-
+  void inflateFreeSpace(nav_msgs::msg::OccupancyGrid & grid);
   // ROS interfaces
   rclcpp::Subscription<octomap_msgs::msg::Octomap>::SharedPtr octomap_sub_;
   rclcpp::Publisher<nav_msgs::msg::OccupancyGrid>::SharedPtr map_pub_;
