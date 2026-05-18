@@ -25,7 +25,8 @@ public:
 private:
   // Callbacks
   void octomapCallback(const octomap_msgs::msg::Octomap::SharedPtr msg);
-
+  rclcpp::TimerBase::SharedPtr publish_timer_;
+  void publishTimer();
   nav_msgs::msg::OccupancyGrid persistent_grid_;
   bool persistent_grid_initialized_ = false;
   void remapPersistentGrid(const nav_msgs::msg::OccupancyGrid & new_frame);
@@ -35,7 +36,7 @@ private:
     const octomap::OcTree & tree,
     double drone_z,
     nav_msgs::msg::OccupancyGrid & grid);
-  void inflateFreeSpace(nav_msgs::msg::OccupancyGrid & grid);
+  void inflateFreeSpace(nav_msgs::msg::OccupancyGrid & grid,int passes);
   // ROS interfaces
   rclcpp::Subscription<octomap_msgs::msg::Octomap>::SharedPtr octomap_sub_;
   rclcpp::Publisher<nav_msgs::msg::OccupancyGrid>::SharedPtr map_pub_;
@@ -52,3 +53,9 @@ private:
 };
 
 }  // namespace octomap_2d_slicer
+
+
+
+
+
+

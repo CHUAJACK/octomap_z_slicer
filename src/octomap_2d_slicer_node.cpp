@@ -14,11 +14,13 @@ OctomapSlicerNode::OctomapSlicerNode(const rclcpp::NodeOptions & options)
   this->declare_parameter<std::string>("world_frame",     "map");
   this->declare_parameter<double>     ("slice_thickness", 0.5);
   this->declare_parameter<bool>       ("unknown_as_free", false);
+  this->declare_parameter<int>        ("publish_rate_ms", 100);
 
   drone_frame_     = this->get_parameter("drone_frame").as_string();
   world_frame_     = this->get_parameter("world_frame").as_string();
   slice_thickness_ = this->get_parameter("slice_thickness").as_double();
   unknown_as_free_ = this->get_parameter("unknown_as_free").as_bool() ? 0.0 : -1.0;
+  int publish_rate_ms = this->get_parameter("publish_rate_ms").as_int();
 
   // ── TF2 ─────────────────────────────────────────────────────────────────────
   tf_buffer_   = std::make_shared<tf2_ros::Buffer>(this->get_clock());
@@ -28,14 +30,31 @@ OctomapSlicerNode::OctomapSlicerNode(const rclcpp::NodeOptions & options)
   map_pub_ = this->create_publisher<nav_msgs::msg::OccupancyGrid>(
     "octomap_2d_slice", rclcpp::QoS(1).transient_local());
 
+  // ── Publish timer ────────────────────────────────────────────────────────────
+  publish_timer_ = this->create_wall_timer(
+    std::chrono::milliseconds(publish_rate_ms),
+    std::bind(&OctomapSlicerNode::publishTimer, this));
+
   // ── Subscriber ───────────────────────────────────────────────────────────────
   octomap_sub_ = this->create_subscription<octomap_msgs::msg::Octomap>(
-    "octomap_full", rclcpp::QoS(1).best_effort(),
+    "octomap_binary", rclcpp::QoS(1).best_effort(),
     std::bind(&OctomapSlicerNode::octomapCallback, this, std::placeholders::_1));
 
   RCLCPP_INFO(this->get_logger(),
-    "OctomapSlicerNode ready  drone_frame=%s  world_frame=%s  slice_thickness=±%.2f m",
-    drone_frame_.c_str(), world_frame_.c_str(), slice_thickness_);
+    "OctomapSlicerNode ready  drone_frame=%s  world_frame=%s  "
+    "slice_thickness=±%.2f m  publish_rate=%d ms",
+    drone_frame_.c_str(), world_frame_.c_str(),
+    slice_thickness_, publish_rate_ms);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  Timer callback — publishes persistent grid at a fixed rate
+// ─────────────────────────────────────────────────────────────────────────────
+void OctomapSlicerNode::publishTimer()
+{
+  if (!persistent_grid_initialized_) return;
+  persistent_grid_.header.stamp = this->get_clock()->now();
+  map_pub_->publish(persistent_grid_);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -74,9 +93,11 @@ void OctomapSlicerNode::remapPersistentGrid(
 
   // Offset in cells between old origin and new origin
   const int ox = static_cast<int>(std::round(
-    (persistent_grid_.info.origin.position.x - new_frame.info.origin.position.x) / res));
+    (persistent_grid_.info.origin.position.x -
+     new_frame.info.origin.position.x) / res));
   const int oy = static_cast<int>(std::round(
-    (persistent_grid_.info.origin.position.y - new_frame.info.origin.position.y) / res));
+    (persistent_grid_.info.origin.position.y -
+     new_frame.info.origin.position.y) / res));
 
   const int old_w = static_cast<int>(persistent_grid_.info.width);
   const int old_h = static_cast<int>(persistent_grid_.info.height);
@@ -162,12 +183,49 @@ void OctomapSlicerNode::buildSlice(
 
         const size_t idx = static_cast<size_t>(gy * width + gx);
         if (occupied) {
-          grid.data[idx] = 100;             // occupied always wins
+          grid.data[idx] = 100;
         } else if (grid.data[idx] != 100) {
-          grid.data[idx] = 0;               // free, don't overwrite occupied
+          grid.data[idx] = 0;
         }
       }
     }
+  }
+}
+
+void OctomapSlicerNode::inflateFreeSpace(
+  nav_msgs::msg::OccupancyGrid & grid, int passes)
+{
+  const int width  = static_cast<int>(grid.info.width);
+  const int height = static_cast<int>(grid.info.height);
+
+  for (int pass = 0; pass < passes; ++pass) {
+    std::vector<int8_t> output = grid.data;  // copy each pass
+
+    for (int gy = 1; gy < height - 1; ++gy) {
+      for (int gx = 1; gx < width - 1; ++gx) {
+        const size_t idx = static_cast<size_t>(gy * width + gx);
+        if (grid.data[idx] != -1) continue;  // only expand into unknowns
+
+        // Count free and occupied neighbours in 3x3 window
+        int free_count = 0;
+        bool has_occupied_neighbour = false;
+        for (int dy = -1; dy <= 1; ++dy) {
+          for (int dx = -1; dx <= 1; ++dx) {
+            if (dy == 0 && dx == 0) continue;
+            const size_t nidx = static_cast<size_t>((gy+dy) * width + (gx+dx));
+            if (grid.data[nidx] == 0)   ++free_count;
+            if (grid.data[nidx] == 100) has_occupied_neighbour = true;
+          }
+        }
+
+        // Only mark free if it has free neighbours but no occupied ones
+        // This prevents bleeding through walls
+        if (free_count >= 1 && !has_occupied_neighbour) {
+          output[idx] = 0;
+        }
+      }
+    }
+    grid.data = output;
   }
 }
 
@@ -187,12 +245,12 @@ void OctomapSlicerNode::octomapCallback(
     "Processing octomap (seq stamp %.3f s)  drone_z=%.3f m",
     rclcpp::Time(msg->header.stamp).seconds(), drone_z);
 
-  // 2. Deserialise full OctoMap message → OcTree
+  // 2. Deserialise binary OctoMap message → OcTree
   octomap::AbstractOcTree * abstract_tree =
-    octomap_msgs::fullMsgToMap(*msg);
+    octomap_msgs::binaryMsgToMap(*msg);
 
   if (!abstract_tree) {
-    RCLCPP_ERROR(this->get_logger(), "Failed to deserialise octomap_full message");
+    RCLCPP_ERROR(this->get_logger(), "Failed to deserialise octomap_binary message");
     return;
   }
 
@@ -213,7 +271,6 @@ void OctomapSlicerNode::octomapCallback(
 
   // 4. Merge into persistent grid
   if (!persistent_grid_initialized_) {
-    // First message — just store it directly
     persistent_grid_             = current_grid;
     persistent_grid_initialized_ = true;
   } else {
@@ -226,32 +283,30 @@ void OctomapSlicerNode::octomapCallback(
       remapPersistentGrid(current_grid);
     }
 
-    // Merge rule: occupied > free > unknown
-    // Cells only ever move forward — nothing reverts to unknown
+    // Merge rule:
+    // - Occupied in current slice → mark occupied (trust current sensor)
+    // - Free in current slice     → mark free (even if previously occupied)
+    // - Unknown in current slice  → if previously occupied, clear to free
+    //                               otherwise keep previous value
     for (size_t i = 0; i < current_grid.data.size(); ++i) {
       const int8_t cur  = current_grid.data[i];
       const int8_t prev = persistent_grid_.data[i];
 
       if (cur == 100) {
-        // Occupied in current slice — trust it
-        persistent_grid_.data[i] = 100;
+        persistent_grid_.data[i] = 100;   // occupied — trust current slice
       } else if (cur == 0) {
-        // Free in current slice — mark free (even if previously occupied)
-        persistent_grid_.data[i] = 0;
+        persistent_grid_.data[i] = 0;     // free — trust current slice
       } else {
-        // Current slice says unknown — keep whatever we knew before
-        // but if it was occupied before and now nothing is there, clear it
+        // Current slice has no opinion (unknown)
         if (prev == 100) {
-          persistent_grid_.data[i] = 0;  // was obstacle, now not in slice = clear
+          persistent_grid_.data[i] = 0;   // was obstacle, no longer in slice → clear
         }
-        // if prev was free or unknown, leave it
+        // prev == 0 or -1: keep as-is
       }
     }
+    //inflateFreeSpace(persistent_grid_, 1);  // adjust pass count as needed
     persistent_grid_.header.stamp = msg->header.stamp;
   }
-
-  // 5. Publish
-  map_pub_->publish(persistent_grid_);
 
   RCLCPP_INFO_ONCE(this->get_logger(), "First 2-D slice published.");
   RCLCPP_DEBUG(this->get_logger(),
