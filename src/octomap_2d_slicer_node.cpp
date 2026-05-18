@@ -37,7 +37,7 @@ OctomapSlicerNode::OctomapSlicerNode(const rclcpp::NodeOptions & options)
 
   // ── Subscriber ───────────────────────────────────────────────────────────────
   octomap_sub_ = this->create_subscription<octomap_msgs::msg::Octomap>(
-    "octomap_binary", rclcpp::QoS(1).best_effort(),
+    "octomap_full", rclcpp::QoS(1).best_effort(),
     std::bind(&OctomapSlicerNode::octomapCallback, this, std::placeholders::_1));
 
   RCLCPP_INFO(this->get_logger(),
@@ -245,12 +245,12 @@ void OctomapSlicerNode::octomapCallback(
     "Processing octomap (seq stamp %.3f s)  drone_z=%.3f m",
     rclcpp::Time(msg->header.stamp).seconds(), drone_z);
 
-  // 2. Deserialise binary OctoMap message → OcTree
+  // 2. Deserialise full OctoMap message → OcTree
   octomap::AbstractOcTree * abstract_tree =
-    octomap_msgs::binaryMsgToMap(*msg);
+    octomap_msgs::fullMsgToMap(*msg);
 
   if (!abstract_tree) {
-    RCLCPP_ERROR(this->get_logger(), "Failed to deserialise octomap_binary message");
+    RCLCPP_ERROR(this->get_logger(), "Failed to deserialise octomap_full message");
     return;
   }
 
